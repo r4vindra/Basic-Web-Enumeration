@@ -98,25 +98,25 @@ The installer automatically installs the required dependencies and reconnaissanc
 Make the enumeration script executable:
 
 ```bash
-chmod +x enumerate.sh
+chmod +x recon.sh
 ```
 
 Run:
 
 ```bash
-./enumerate.sh -d example.com
+./recon.sh -d example.com
 ```
 
 ### Passive Mode
 
 ```bash
-./enumerate.sh -d example.com --passive
+./recon.sh -d example.com --passive
 ```
 
 ### Full Recon
 
 ```bash
-./enumerate.sh -d example.com --full
+./recon.sh -d example.com --full
 ```
 
 > Replace `example.com` with an authorized target.
@@ -161,7 +161,7 @@ The tool follows a simple reconnaissance pipeline:
 
 **3. Probe** → Identify live HTTP/HTTPS services.
 
-**4. Enumerate** → Discover ports, endpoints, URLs and technologies.
+**4. recon** → Discover ports, endpoints, URLs and technologies.
 
 **5. Crawl** → Collect application paths and resources.
 
