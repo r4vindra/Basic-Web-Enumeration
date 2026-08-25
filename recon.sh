@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# recon.sh
-# Professional Bug Bounty Recon Framework
+# Basic-Web-Enumeration
+# Automated Web Reconnaissance Framework
 #
-# Author: r4vindra
+# Author  : r4vindra
+# Version : 4.0
 #
-# PURPOSE
-# -------
-# Orchestrates passive/active web reconnaissance while keeping
-# every stage separated and reproducible.
-#
-# INPUT
-# -----
+# Usage:
 #   ./recon.sh -d example.com
+#   ./recon.sh -l targets.txt
 #   ./recon.sh -d example.com --passive
 #   ./recon.sh -d example.com --full
-#   ./recon.sh -l targets.txt --full
 #
-# IMPORTANT
-# ---------
-# Use only against assets that are explicitly in scope.
+# IMPORTANT:
+# Only use against assets you own or are explicitly authorized
+# to test.
 # ============================================================
 
 set -Eeuo pipefail
 
-VERSION="3.0"
+VERSION="4.0"
+SCRIPT_NAME="$(basename "$0")"
+START_TIME="$(date +%s)"
 
 # ============================================================
 # Colors
@@ -42,63 +39,67 @@ GRAY='\033[0;90m'
 NC='\033[0m'
 
 # ============================================================
-# Defaults
+# Global Variables
 # ============================================================
 
-DOMAIN=""
-TARGET_FILE=""
-MODE="standard"
+TARGET=""
+TARGET_LIST=""
+PROFILE="standard"
 
 THREADS=50
-NAABU_PORTS="80,81,443,4443,591,593,8000,8001,8008,8009,8080,8081,8088,8089,8090,8443,8888,9000,9001,9002,7001,7002,7003,7070,7443,8002,8003,8004,8083,8086,8091,8181,9003,9090,9443,10000"
+RATE_LIMIT=100
 
-WORDLIST=""
-RESOLVERS=""
+OUTPUT_BASE="recon"
 
-RUN_BBOT="auto"
-RUN_CADUCEUS="auto"
-RUN_TIMEMACHINE="auto"
-RUN_GITHUB="auto"
+SECLISTS=""
+WORKDIR=""
+LOGFILE=""
 
-START_TIME=$(date +%s)
-
-# ============================================================
-# Output
-# ============================================================
-
-RUN_ID=$(date +"%Y%m%d_%H%M%S")
-
-ROOT_DIR=""
+DOMAIN_FILE=""
+SUBDOMAIN_FILE=""
+RESOLVED_FILE=""
+ALIVE_FILE=""
+URL_FILE=""
+JS_FILE=""
+PARAM_FILE=""
+PORT_FILE=""
 
 # ============================================================
-# Helpers
+# Logging
 # ============================================================
-
-log() {
-    echo -e "$1" | tee -a "$ROOT_DIR/logs/recon.log"
-}
 
 info() {
-    log "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $*"
 }
 
-good() {
-    log "${GREEN}[+]${NC} $1"
+success() {
+    echo -e "${GREEN}[+]${NC} $*"
 }
 
 warn() {
-    log "${YELLOW}[!]${NC} $1"
+    echo -e "${YELLOW}[!]${NC} $*"
 }
 
 error() {
-    log "${RED}[-]${NC} $1"
+    echo -e "${RED}[-]${NC} $*" >&2
 }
 
 section() {
-    log ""
-    log "${MAGENTA}============================================================${NC}"
-    log "${WHITE}$1${NC}"
-    log "${MAGENTA}============================================================${NC}"
+    echo
+    echo -e "${MAGENTA}============================================================${NC}"
+    echo -e "${WHITE}$*${NC}"
+    echo -e "${MAGENTA}============================================================${NC}"
+}
+
+run_cmd() {
+    echo -e "${GRAY}[CMD]${NC} $*" | tee -a "$LOGFILE"
+
+    if ! "$@" >> "$LOGFILE" 2>&1; then
+        warn "Command failed: $*"
+        return 1
+    fi
+
+    return 0
 }
 
 # ============================================================
@@ -111,16 +112,20 @@ banner() {
 
     echo -e "${CYAN}"
 
-    if command -v figlet >/dev/null 2>&1; then
-        figlet "r4vindra"
-    else
-        echo "r4vindra"
-    fi
+    cat <<'EOF'
+
+██████╗ ██╗  ██╗██╗   ██╗██╗███╗   ██╗██████╗ ██████╗  █████╗
+██╔══██╗██║  ██║██║   ██║██║████╗  ██║██╔══██╗██╔══██╗██╔══██╗
+██████╔╝███████║██║   ██║██║██╔██╗ ██║██████╔╝██████╔╝███████║
+██╔══██╗██╔══██║╚██╗ ██╔╝██║██║╚██╗██║██╔══██╗██╔══██╗██╔══██║
+██║  ██║██║  ██║ ╚████╔╝ ██║██║ ╚████║██████╔╝██║  ██║██║  ██║
+╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝
+
+EOF
 
     echo -e "${NC}"
-
-    echo -e "${WHITE}Bug Bounty Recon Framework v${VERSION}${NC}"
-    echo -e "${GRAY}Discover → Correlate → Validate → Prioritize${NC}"
+    echo -e "${WHITE}Basic Web Enumeration${NC} ${GRAY}v${VERSION}${NC}"
+    echo -e "${GRAY}Automated reconnaissance framework${NC}"
     echo
 }
 
@@ -133,43 +138,40 @@ usage() {
     cat <<EOF
 
 Usage:
+    $SCRIPT_NAME [OPTIONS]
 
-  $0 -d example.com
-  $0 -d example.com --passive
-  $0 -d example.com --full
-  $0 -l targets.txt --full
+Target:
+    -d, --domain <domain>       Single domain/IP
+    -l, --list <file>           File containing targets
+
+Profiles:
+    --passive                   Passive reconnaissance
+    --standard                  Normal reconnaissance
+    --full                      Full reconnaissance
 
 Options:
-
-  -d DOMAIN       Target root domain
-  -l FILE         File containing target domains
-
-  --passive       Passive reconnaissance only
-  --standard      Standard reconnaissance
-  --full          Full reconnaissance
-
-  --threads N     Number of threads (default: 50)
-
-  --wordlist FILE Permutation/content wordlist
-  --resolvers FILE
-                  DNS resolvers for puredns
-
-  --no-bbot       Disable BBOT
-  --no-github     Disable github-subdomains
-  --no-caduceus   Disable Caduceus
-  --no-ttm        Disable TheTimeMachine
-
-  -h, --help      Show this help
+    -t, --threads <number>      Concurrency (default: ${THREADS})
+    --rate <number>             Rate limit (default: ${RATE_LIMIT})
+    -o, --output <directory>    Output directory
+    --no-nuclei                 Skip Nuclei
+    --no-content                Skip content discovery
+    --no-crawl                  Skip crawling
+    --no-ports                  Skip port scanning
+    --no-bbot                   Skip BBOT
+    --no-github                 Skip GitHub subdomain discovery
+    -h, --help                  Show this help
 
 Examples:
 
-  $0 -d example.com
+    $SCRIPT_NAME -d example.com
 
-  $0 -d example.com --passive
+    $SCRIPT_NAME -d example.com --passive
 
-  $0 -d example.com --full --threads 100
+    $SCRIPT_NAME -d example.com --full
 
-  $0 -l targets.txt --standard
+    $SCRIPT_NAME -l targets.txt --full
+
+    $SCRIPT_NAME -d example.com --full --threads 100
 
 EOF
 }
@@ -178,432 +180,622 @@ EOF
 # Argument Parsing
 # ============================================================
 
-while [[ $# -gt 0 ]]; do
+parse_args() {
 
-    case "$1" in
+    while [[ $# -gt 0 ]]; do
 
-        -d)
-            DOMAIN="$2"
-            shift 2
+        case "$1" in
+
+            -d|--domain)
+                TARGET="$2"
+                shift 2
+                ;;
+
+            -l|--list)
+                TARGET_LIST="$2"
+                shift 2
+                ;;
+
+            --passive)
+                PROFILE="passive"
+                shift
+                ;;
+
+            --standard)
+                PROFILE="standard"
+                shift
+                ;;
+
+            --full)
+                PROFILE="full"
+                shift
+                ;;
+
+            -t|--threads)
+                THREADS="$2"
+                shift 2
+                ;;
+
+            --rate)
+                RATE_LIMIT="$2"
+                shift 2
+                ;;
+
+            -o|--output)
+                OUTPUT_BASE="$2"
+                shift 2
+                ;;
+
+            --no-nuclei)
+                NO_NUCLEI=1
+                shift
+                ;;
+
+            --no-content)
+                NO_CONTENT=1
+                shift
+                ;;
+
+            --no-crawl)
+                NO_CRAWL=1
+                shift
+                ;;
+
+            --no-ports)
+                NO_PORTS=1
+                shift
+                ;;
+
+            --no-bbot)
+                NO_BBOT=1
+                shift
+                ;;
+
+            --no-github)
+                NO_GITHUB=1
+                shift
+                ;;
+
+            -h|--help)
+                usage
+                exit 0
+                ;;
+
+            *)
+                error "Unknown argument: $1"
+                usage
+                exit 1
+                ;;
+
+        esac
+
+    done
+
+    if [[ -z "$TARGET" && -z "$TARGET_LIST" ]]; then
+        error "You must provide a domain or target list."
+        usage
+        exit 1
+    fi
+
+    if [[ -n "$TARGET" && -n "$TARGET_LIST" ]]; then
+        error "Use either --domain or --list, not both."
+        exit 1
+    fi
+}
+
+# ============================================================
+# Root / Environment
+# ============================================================
+
+check_environment() {
+
+    section "Environment"
+
+    if [[ $EUID -eq 0 ]]; then
+        warn "Running as root."
+    fi
+
+    if ! command -v bash >/dev/null 2>&1; then
+        error "Bash is required."
+        exit 1
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        error "curl is missing."
+        exit 1
+    fi
+}
+
+# ============================================================
+# SecLists Detection
+# ============================================================
+
+find_seclists() {
+
+    section "SecLists Detection"
+
+    local paths=(
+        "/usr/share/seclists"
+        "/usr/share/SecLists"
+        "/opt/SecLists"
+        "$HOME/SecLists"
+    )
+
+    for path in "${paths[@]}"; do
+
+        if [[ -d "$path" ]]; then
+            SECLISTS="$path"
+            success "SecLists found: $SECLISTS"
+            return 0
+        fi
+
+    done
+
+    error "SecLists was not found."
+
+    echo
+    echo "Install it with:"
+    echo
+    echo "    sudo apt install seclists"
+    echo
+
+    exit 1
+}
+
+# ============================================================
+# Locate SecLists Resources
+# ============================================================
+
+find_wordlist() {
+
+    local type="$1"
+
+    case "$type" in
+
+        dns)
+
+            local candidates=(
+                "$SECLISTS/Discovery/DNS/subdomains-top1million-5000.txt"
+                "$SECLISTS/Discovery/DNS/subdomains-top1million-20000.txt"
+                "$SECLISTS/Discovery/DNS/bitquark-subdomains-top100000.txt"
+            )
+
             ;;
 
-        -l)
-            TARGET_FILE="$2"
-            shift 2
+        web)
+
+            local candidates=(
+                "$SECLISTS/Discovery/Web-Content/common.txt"
+                "$SECLISTS/Discovery/Web-Content/combined_directories.txt"
+                "$SECLISTS/Discovery/Web-Content/raft-small-words.txt"
+            )
+
             ;;
 
-        --passive)
-            MODE="passive"
-            shift
+        parameters)
+
+            local candidates=(
+                "$SECLISTS/Discovery/Web-Content/burp-parameter-names.txt"
+                "$SECLISTS/Discovery/Web-Content/raft-small-words.txt"
+            )
+
             ;;
 
-        --standard)
-            MODE="standard"
-            shift
-            ;;
+        permutations)
 
-        --full)
-            MODE="full"
-            shift
-            ;;
+            local candidates=(
+                "$SECLISTS/Discovery/DNS/namelist.txt"
+                "$SECLISTS/Discovery/DNS/subdomains-top1million-5000.txt"
+            )
 
-        --threads)
-            THREADS="$2"
-            shift 2
-            ;;
-
-        --wordlist)
-            WORDLIST="$2"
-            shift 2
-            ;;
-
-        --resolvers)
-            RESOLVERS="$2"
-            shift 2
-            ;;
-
-        --no-bbot)
-            RUN_BBOT="no"
-            shift
-            ;;
-
-        --no-github)
-            RUN_GITHUB="no"
-            shift
-            ;;
-
-        --no-caduceus)
-            RUN_CADUCEUS="no"
-            shift
-            ;;
-
-        --no-ttm)
-            RUN_TIMEMACHINE="no"
-            shift
-            ;;
-
-        -h|--help)
-            usage
-            exit 0
             ;;
 
         *)
-            error "Unknown option: $1"
-            usage
-            exit 1
+
+            return 1
             ;;
 
     esac
 
-done
+    for wordlist in "${candidates[@]}"; do
 
-# ============================================================
-# Validate input
-# ============================================================
+        if [[ -f "$wordlist" ]]; then
+            echo "$wordlist"
+            return 0
+        fi
 
-if [[ -z "$DOMAIN" && -z "$TARGET_FILE" ]]; then
+    done
 
-    usage
-
-    read -rp "Enter target domain: " DOMAIN
-
-fi
-
-if [[ -n "$TARGET_FILE" && ! -f "$TARGET_FILE" ]]; then
-    error "Target file does not exist: $TARGET_FILE"
-    exit 1
-fi
-
-if [[ -n "$DOMAIN" ]]; then
-
-    DOMAIN="${DOMAIN#http://}"
-    DOMAIN="${DOMAIN#https://}"
-    DOMAIN="${DOMAIN%%/*}"
-
-fi
-
-# ============================================================
-# Initialize workspace
-# ============================================================
-
-if [[ -n "$DOMAIN" ]]; then
-    ROOT_DIR="recon/${DOMAIN}_${RUN_ID}"
-else
-    ROOT_DIR="recon/target-list_${RUN_ID}"
-fi
-
-mkdir -p \
-    "$ROOT_DIR"/{logs,scope,passive,subdomains,dns,permutations,infra,http,crawl,archives,content,js,findings,reports,raw}
-
-touch "$ROOT_DIR/logs/recon.log"
-
-# ============================================================
-# Dependency helpers
-# ============================================================
-
-have() {
-    command -v "$1" >/dev/null 2>&1
+    return 1
 }
 
-run_optional() {
+# ============================================================
+# Tool Checking
+# ============================================================
+
+require_tool() {
 
     local tool="$1"
-    shift
 
-    if have "$tool"; then
-        info "Running $tool..."
-        "$@" || warn "$tool returned a non-zero exit status."
-    else
-        warn "$tool not installed — skipping."
+    if command -v "$tool" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    warn "Missing tool: $tool"
+    return 1
+}
+
+check_tools() {
+
+    section "Tool Check"
+
+    local required=(
+        curl
+        jq
+        subfinder
+        httpx
+        dnsx
+        katana
+    )
+
+    local optional=(
+        assetfinder
+        amass
+        findomain
+        naabu
+        nmap
+        gau
+        waybackurls
+        gospider
+        gotator
+        dnsgen
+        ffuf
+        dirsearch
+        nuclei
+        subzy
+        gf
+        bbot
+        github-subdomains
+    )
+
+    local missing=0
+
+    echo -e "${WHITE}Required:${NC}"
+
+    for tool in "${required[@]}"; do
+
+        if require_tool "$tool"; then
+            echo -e "  ${GREEN}[OK]${NC} $tool"
+        else
+            echo -e "  ${RED}[MISSING]${NC} $tool"
+            ((missing+=1))
+        fi
+
+    done
+
+    echo
+    echo -e "${WHITE}Optional:${NC}"
+
+    for tool in "${optional[@]}"; do
+
+        if command -v "$tool" >/dev/null 2>&1; then
+            echo -e "  ${GREEN}[OK]${NC} $tool"
+        else
+            echo -e "  ${YELLOW}[SKIP]${NC} $tool"
+        fi
+
+    done
+
+    if [[ "$missing" -gt 0 ]]; then
+        error "Required dependencies are missing."
+        echo "Run:"
+        echo "    sudo ./install.sh"
+        exit 1
     fi
 }
 
 # ============================================================
-# Scope
+# Prepare Workspace
 # ============================================================
 
-prepare_scope() {
+prepare_workspace() {
 
-    section "01 — Scope Preparation"
+    local name
 
-    if [[ -n "$DOMAIN" ]]; then
-
-        echo "$DOMAIN" > "$ROOT_DIR/scope/domains.txt"
-
+    if [[ -n "$TARGET" ]]; then
+        name="$TARGET"
     else
-
-        grep -Eiv '^[[:space:]]*(#|$)' "$TARGET_FILE" \
-            | sed 's#https\?://##' \
-            | sed 's#/.*##' \
-            | tr '[:upper:]' '[:lower:]' \
-            | sort -u \
-            > "$ROOT_DIR/scope/domains.txt"
-
+        name="multi-target"
     fi
 
-    cp "$ROOT_DIR/scope/domains.txt" \
-       "$ROOT_DIR/scope/scope-original.txt"
+    name="$(echo "$name" | tr '/:' '__' | tr -cd '[:alnum:]_.-')"
 
-    good "Scope saved."
+    WORKDIR="${OUTPUT_BASE}/${name}_$(date '+%Y%m%d_%H%M%S')"
 
-    cat "$ROOT_DIR/scope/domains.txt"
+    mkdir -p "$WORKDIR"/{
+        scope,
+        passive,
+        dns,
+        permutations,
+        infrastructure,
+        http,
+        archives,
+        crawl,
+        javascript,
+        content,
+        findings,
+        reports,
+        logs
+    }
+
+    LOGFILE="$WORKDIR/logs/recon.log"
+
+    touch "$LOGFILE"
+
+    DOMAIN_FILE="$WORKDIR/scope/targets.txt"
+    SUBDOMAIN_FILE="$WORKDIR/dns/subdomains.txt"
+    RESOLVED_FILE="$WORKDIR/dns/resolved.txt"
+    ALIVE_FILE="$WORKDIR/http/alive.txt"
+    URL_FILE="$WORKDIR/archives/all-urls.txt"
+    JS_FILE="$WORKDIR/javascript/javascript.txt"
+    PARAM_FILE="$WORKDIR/content/parameters.txt"
+    PORT_FILE="$WORKDIR/infrastructure/ports.txt"
+
+    success "Output directory: $WORKDIR"
 }
 
 # ============================================================
-# Certificate Transparency
+# Prepare Targets
 # ============================================================
 
-crtsh() {
+prepare_targets() {
 
-    section "02 — Certificate Transparency"
+    section "Scope"
 
-    while read -r domain; do
+    if [[ -n "$TARGET" ]]; then
+        echo "$TARGET" > "$DOMAIN_FILE"
+    else
 
-        curl -fsS \
-            "https://crt.sh/?q=%25.${domain}&output=json" \
-            2>/dev/null \
-            | jq -r '.[].name_value' 2>/dev/null \
-            | sed 's/\*\.//g'
+        if [[ ! -f "$TARGET_LIST" ]]; then
+            error "Target list does not exist: $TARGET_LIST"
+            exit 1
+        fi
 
-    done < "$ROOT_DIR/scope/domains.txt" \
-        | sort -u \
-        > "$ROOT_DIR/passive/crtsh.txt"
+        sed \
+            -e 's/\r//g' \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^[[:space:]]*$/d' \
+            "$TARGET_LIST" |
+            sort -u > "$DOMAIN_FILE"
+    fi
 
-    good "crt.sh results: $(wc -l < "$ROOT_DIR/passive/crtsh.txt")"
+    sed -i 's#https\?://##g' "$DOMAIN_FILE"
 
+    success "Targets loaded: $(wc -l < "$DOMAIN_FILE")"
 }
 
 # ============================================================
-# Subdomain Enumeration
+# Passive Recon
 # ============================================================
 
-subdomain_enum() {
+passive_recon() {
 
-    section "03 — Passive Subdomain Enumeration"
+    section "Passive Reconnaissance"
 
-    local output="$ROOT_DIR/passive"
+    local target
 
-    while read -r domain; do
+    while IFS= read -r target; do
 
-        if have subfinder; then
+        info "Passive enumeration: $target"
+
+        if command -v subfinder >/dev/null 2>&1; then
             subfinder \
-                -d "$domain" \
+                -d "$target" \
                 -all \
                 -silent \
-                >> "$output/subfinder.txt" || true
+                -o "$WORKDIR/passive/subfinder-${target}.txt" \
+                >> "$LOGFILE" 2>&1 || true
         fi
 
-        if have assetfinder; then
+        if command -v assetfinder >/dev/null 2>&1; then
             assetfinder \
-                --subs-only "$domain" \
-                >> "$output/assetfinder.txt" || true
+                --subs-only "$target" \
+                > "$WORKDIR/passive/assetfinder-${target}.txt" \
+                2>> "$LOGFILE" || true
         fi
 
-        if have findomain; then
+        if command -v findomain >/dev/null 2>&1; then
             findomain \
-                -t "$domain" \
+                -t "$target" \
                 --quiet \
-                >> "$output/findomain.txt" || true
+                -u "$WORKDIR/passive/findomain-${target}.txt" \
+                >> "$LOGFILE" 2>&1 || true
         fi
 
-        if have amass; then
+        if command -v amass >/dev/null 2>&1; then
             amass enum \
                 -passive \
-                -d "$domain" \
-                -o "$output/amass-${domain}.txt" \
-                >/dev/null 2>&1 || true
+                -d "$target" \
+                -o "$WORKDIR/passive/amass-${target}.txt" \
+                >> "$LOGFILE" 2>&1 || true
         fi
 
-        if have github-subdomains && [[ "$RUN_GITHUB" != "no" ]]; then
+        if [[ "${NO_GITHUB:-0}" -eq 0 ]] &&
+           command -v github-subdomains >/dev/null 2>&1; then
 
-            github-subdomains \
-                -d "$domain" \
-                -raw \
-                -o "$output/github-${domain}.txt" \
-                >/dev/null 2>&1 || true
+            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+
+                github-subdomains \
+                    -d "$target" \
+                    -t "$GITHUB_TOKEN" \
+                    > "$WORKDIR/passive/github-${target}.txt" \
+                    2>> "$LOGFILE" || true
+
+            else
+                warn "GITHUB_TOKEN not set. Skipping GitHub enumeration."
+            fi
 
         fi
 
-    done < "$ROOT_DIR/scope/domains.txt"
+    done < "$DOMAIN_FILE"
 
-    cat "$output"/*.txt 2>/dev/null \
-        | sed 's/\*\.//g' \
-        | tr '[:upper:]' '[:lower:]' \
-        | grep -E '^[a-z0-9._-]+\.[a-z]{2,}$' \
-        | sort -u \
-        > "$ROOT_DIR/subdomains/passive-all.txt"
+    cat "$WORKDIR"/passive/*.txt 2>/dev/null |
+        sed 's/\r//g' |
+        sed '/^[[:space:]]*$/d' |
+        sort -u |
+        grep -Ei '^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$' \
+        > "$SUBDOMAIN_FILE" || true
 
-    good "Passive subdomains: $(wc -l < "$ROOT_DIR/subdomains/passive-all.txt")"
+    cat "$DOMAIN_FILE" >> "$SUBDOMAIN_FILE"
+
+    sort -u "$SUBDOMAIN_FILE" -o "$SUBDOMAIN_FILE"
+
+    success "Unique domains/subdomains: $(wc -l < "$SUBDOMAIN_FILE")"
 }
 
 # ============================================================
 # BBOT
 # ============================================================
 
-bbot_enum() {
+bbot_recon() {
 
-    [[ "$RUN_BBOT" == "no" ]] && return
+    [[ "${NO_BBOT:-0}" -eq 1 ]] && return 0
 
-    if ! have bbot; then
-        warn "BBOT not installed — skipping."
-        return
+    if ! command -v bbot >/dev/null 2>&1; then
+        warn "BBOT not installed. Skipping."
+        return 0
     fi
 
-    section "04 — BBOT Attack-Surface Discovery"
+    section "BBOT Recon"
 
-    while read -r domain; do
+    while IFS= read -r target; do
 
-        mkdir -p "$ROOT_DIR/raw/bbot"
+        info "BBOT: $target"
 
         bbot \
-            -t "$domain" \
-            -p subdomain-enum \
-            -o "$ROOT_DIR/raw/bbot" \
-            -n "bbot-${domain}" \
-            || warn "BBOT failed for $domain."
+            -t "$target" \
+            -m subdomain-enum \
+            -o "$WORKDIR/passive/bbot-${target}" \
+            >> "$LOGFILE" 2>&1 || true
 
-    done < "$ROOT_DIR/scope/domains.txt"
+    done < "$DOMAIN_FILE"
 }
 
 # ============================================================
 # DNS Resolution
 # ============================================================
 
-resolve_domains() {
+dns_resolution() {
 
-    section "05 — DNS Resolution"
+    section "DNS Resolution"
 
-    local input="$ROOT_DIR/subdomains/passive-all.txt"
-    local output="$ROOT_DIR/dns/resolved.txt"
-
-    if have puredns && [[ -n "$RESOLVERS" && -f "$RESOLVERS" ]]; then
-
-        puredns resolve \
-            "$input" \
-            --resolvers "$RESOLVERS" \
-            --write "$output" \
-            || true
-
-    elif have dnsx; then
+    if command -v dnsx >/dev/null 2>&1; then
 
         dnsx \
-            -l "$input" \
+            -l "$SUBDOMAIN_FILE" \
             -silent \
             -a \
             -resp \
-            -o "$output" \
-            || true
-
-    else
-
-        warn "puredns/dnsx unavailable."
-
-        cp "$input" "$output"
+            -o "$RESOLVED_FILE" \
+            >> "$LOGFILE" 2>&1 || true
 
     fi
 
-    sort -u "$output" -o "$output"
+    if [[ ! -s "$RESOLVED_FILE" ]]; then
 
-    good "Resolved names: $(wc -l < "$output")"
+        while IFS= read -r domain; do
+
+            ip=$(getent ahosts "$domain" 2>/dev/null |
+                awk '{print $1}' |
+                sort -u |
+                head -n 1 || true)
+
+            [[ -n "$ip" ]] && echo "$domain [$ip]"
+
+        done < "$SUBDOMAIN_FILE" > "$RESOLVED_FILE"
+
+    fi
+
+    success "Resolved targets: $(wc -l < "$RESOLVED_FILE")"
 }
 
 # ============================================================
 # Permutation
 # ============================================================
 
-permutation() {
+permutation_recon() {
 
-    section "06 — Subdomain Permutation"
+    section "Subdomain Permutation"
 
-    local base="$ROOT_DIR/dns/resolved.txt"
+    local wordlist
 
-    [[ ! -s "$base" ]] && {
-        warn "No resolved domains available."
-        return
-    }
+    wordlist="$(find_wordlist permutations || true)"
 
-    if have gotator; then
+    if [[ -z "$wordlist" ]]; then
+        warn "Suitable SecLists permutation list not found."
+        return 0
+    fi
 
-        if [[ -n "$WORDLIST" && -f "$WORDLIST" ]]; then
+    info "Using SecLists:"
+    echo "    $wordlist"
 
-            gotator \
-                -sub "$base" \
-                -perm "$WORDLIST" \
-                -depth 2 \
-                -mindup \
-                -adv \
-                -silent \
-                > "$ROOT_DIR/permutations/gotator.txt" \
-                || true
+    if command -v gotator >/dev/null 2>&1; then
 
-        else
+        gotator \
+            -sub "$SUBDOMAIN_FILE" \
+            -perm "$wordlist" \
+            -depth 1 \
+            -silent \
+            > "$WORKDIR/permutations/gotator.txt" \
+            2>> "$LOGFILE" || true
 
-            gotator \
-                -sub "$base" \
-                -depth 1 \
-                -prefixes \
-                -mindup \
-                -silent \
-                > "$ROOT_DIR/permutations/gotator.txt" \
-                || true
+    elif command -v dnsgen >/dev/null 2>&1; then
 
-        fi
-
-        sort -u \
-            "$ROOT_DIR/permutations/gotator.txt" \
-            > "$ROOT_DIR/permutations/all.txt"
-
-        if have puredns && [[ -n "$RESOLVERS" && -f "$RESOLVERS" ]]; then
-
-            puredns resolve \
-                "$ROOT_DIR/permutations/all.txt" \
-                --resolvers "$RESOLVERS" \
-                --write "$ROOT_DIR/dns/permutated-resolved.txt" \
-                || true
-
-        elif have dnsx; then
-
-            dnsx \
-                -l "$ROOT_DIR/permutations/all.txt" \
-                -silent \
-                > "$ROOT_DIR/dns/permutated-resolved.txt" \
-                || true
-
-        fi
-
-        cat \
-            "$ROOT_DIR/dns/resolved.txt" \
-            "$ROOT_DIR/dns/permutated-resolved.txt" \
-            2>/dev/null \
-            | sort -u \
-            > "$ROOT_DIR/subdomains/all-resolved.txt"
+        cat "$SUBDOMAIN_FILE" |
+            dnsgen - |
+            sort -u \
+            > "$WORKDIR/permutations/dnsgen.txt" \
+            2>> "$LOGFILE" || true
 
     else
 
-        warn "gotator not installed — skipping permutations."
-
-        cp "$base" "$ROOT_DIR/subdomains/all-resolved.txt"
+        warn "Gotator/DNSGen not installed."
+        return 0
 
     fi
 
-    good "Final resolved subdomains: $(wc -l < "$ROOT_DIR/subdomains/all-resolved.txt")"
+    if [[ -s "$WORKDIR/permutations/gotator.txt" ]]; then
+
+        dnsx \
+            -l "$WORKDIR/permutations/gotator.txt" \
+            -silent \
+            > "$WORKDIR/permutations/resolved.txt" \
+            2>> "$LOGFILE" || true
+
+        cat "$WORKDIR/permutations/resolved.txt" >> "$SUBDOMAIN_FILE"
+
+        sort -u "$SUBDOMAIN_FILE" -o "$SUBDOMAIN_FILE"
+
+    fi
+
+    success "Permutation stage completed."
 }
 
 # ============================================================
-# HTTP Fingerprinting
+# HTTP Discovery
 # ============================================================
 
-http_probe() {
+http_discovery() {
 
-    section "07 — HTTP Discovery & Fingerprinting"
+    section "HTTP Discovery & Fingerprinting"
 
-    if ! have httpx; then
-        warn "httpx not installed."
-        return
+    if ! command -v httpx >/dev/null 2>&1; then
+        error "HTTPX is required."
+        return 1
     fi
 
     httpx \
-        -l "$ROOT_DIR/subdomains/all-resolved.txt" \
+        -l "$SUBDOMAIN_FILE" \
         -silent \
         -threads "$THREADS" \
         -status-code \
@@ -613,15 +805,15 @@ http_probe() {
         -location \
         -follow-redirects \
         -json \
-        -o "$ROOT_DIR/http/httpx.json" \
-        || true
+        -o "$WORKDIR/http/httpx.json" \
+        >> "$LOGFILE" 2>&1 || true
 
-    jq -r '.url' "$ROOT_DIR/http/httpx.json" \
-        2>/dev/null \
-        | sort -u \
-        > "$ROOT_DIR/http/alive.txt"
+    jq -r '.url // empty' \
+        "$WORKDIR/http/httpx.json" |
+        sort -u \
+        > "$ALIVE_FILE" || true
 
-    good "Live web targets: $(wc -l < "$ROOT_DIR/http/alive.txt")"
+    success "Alive web targets: $(wc -l < "$ALIVE_FILE")"
 }
 
 # ============================================================
@@ -630,391 +822,333 @@ http_probe() {
 
 port_scan() {
 
-    section "08 — Web Port Discovery"
+    [[ "${NO_PORTS:-0}" -eq 1 ]] && return 0
 
-    if ! have naabu; then
-        warn "naabu not installed."
-        return
+    section "Infrastructure / Port Discovery"
+
+    if ! command -v naabu >/dev/null 2>&1; then
+        warn "Naabu not installed. Skipping port scan."
+        return 0
     fi
 
-    naabu \
-        -list "$ROOT_DIR/subdomains/all-resolved.txt" \
-        -ports "$NAABU_PORTS" \
-        -c "$THREADS" \
-        -silent \
-        -o "$ROOT_DIR/infra/naabu.txt" \
-        || true
+    local ports="80,443,8000,8001,8008,8080,8081,8082,8088,8090,8181,8443,8888,9000,9001,9090,9443,10000"
 
-    if have httpx && [[ -s "$ROOT_DIR/infra/naabu.txt" ]]; then
+    naabu \
+        -list "$SUBDOMAIN_FILE" \
+        -p "$ports" \
+        -c "$THREADS" \
+        -rate "$RATE_LIMIT" \
+        -silent \
+        -o "$PORT_FILE" \
+        >> "$LOGFILE" 2>&1 || true
+
+    success "Open web-related ports: $(wc -l < "$PORT_FILE")"
+
+    if command -v httpx >/dev/null 2>&1 &&
+       [[ -s "$PORT_FILE" ]]; then
 
         httpx \
-            -l "$ROOT_DIR/infra/naabu.txt" \
+            -l "$PORT_FILE" \
             -silent \
             -status-code \
             -title \
             -tech-detect \
             -server \
             -json \
-            -o "$ROOT_DIR/http/naabu-httpx.json" \
-            || true
+            -o "$WORKDIR/infrastructure/http-services.json" \
+            >> "$LOGFILE" 2>&1 || true
 
     fi
 }
 
 # ============================================================
-# Caduceus
+# Historical URLs
 # ============================================================
 
-caduceus_scan() {
+archives() {
 
-    [[ "$RUN_CADUCEUS" == "no" ]] && return
+    section "Historical URL Discovery"
 
-    if ! have caduceus; then
-        warn "Caduceus not installed — skipping."
-        return
-    fi
+    : > "$URL_FILE"
 
-    if ! have dnsx; then
-        warn "dnsx required for basic IP extraction."
-        return
-    fi
-
-    section "09 — Certificate / IP Correlation"
-
-    dnsx \
-        -l "$ROOT_DIR/subdomains/all-resolved.txt" \
-        -a \
-        -resp \
-        -silent \
-        > "$ROOT_DIR/infra/dns-ip.txt" \
-        || true
-
-    awk '{print $2}' "$ROOT_DIR/infra/dns-ip.txt" \
-        | tr ',' '\n' \
-        | grep -E '^[0-9]+\.' \
-        | sort -u \
-        > "$ROOT_DIR/infra/ips.txt"
-
-    if [[ -s "$ROOT_DIR/infra/ips.txt" ]]; then
-
-        caduceus \
-            -i "$ROOT_DIR/infra/ips.txt" \
-            -j \
-            -p "443,4443,8443,9443" \
-            > "$ROOT_DIR/infra/caduceus.jsonl" \
-            || true
-
-        good "Certificate scan completed."
-
-    fi
-}
-
-# ============================================================
-# Archives
-# ============================================================
-
-archive_enum() {
-
-    section "10 — Historical URL Discovery"
-
-    if have gau; then
+    if command -v gau >/dev/null 2>&1; then
 
         gau \
             --threads "$THREADS" \
-            "$DOMAIN" \
-            2>/dev/null \
-            > "$ROOT_DIR/archives/gau.txt" \
-            || true
+            --blacklist jpg,jpeg,png,gif,svg,css,woff,woff2,ico \
+            < "$DOMAIN_FILE" \
+            >> "$WORKDIR/archives/gau.txt" \
+            2>> "$LOGFILE" || true
 
     fi
 
-    if have waybackurls; then
+    if command -v waybackurls >/dev/null 2>&1; then
 
-        echo "$DOMAIN" \
-            | waybackurls \
-            > "$ROOT_DIR/archives/waybackurls.txt" \
-            || true
+        while IFS= read -r domain; do
 
-    fi
+            echo "$domain" |
+                waybackurls \
+                >> "$WORKDIR/archives/waybackurls.txt" \
+                2>> "$LOGFILE" || true
 
-    if have curl; then
-
-        curl -fsS \
-            "https://web.archive.org/cdx/search/cdx?url=*.$DOMAIN/*&output=json&fl=original&collapse=urlkey" \
-            2>/dev/null \
-            | jq -r '.[1:][]?[0]' \
-            2>/dev/null \
-            | sort -u \
-            > "$ROOT_DIR/archives/cdx.txt" \
-            || true
+        done < "$DOMAIN_FILE"
 
     fi
 
-    cat "$ROOT_DIR/archives"/*.txt 2>/dev/null \
-        | sed '/^$/d' \
-        | sort -u \
-        > "$ROOT_DIR/archives/all-urls.txt"
+    cat "$WORKDIR"/archives/*.txt 2>/dev/null |
+        sed '/^[[:space:]]*$/d' |
+        sort -u > "$URL_FILE" || true
 
-    good "Historical URLs: $(wc -l < "$ROOT_DIR/archives/all-urls.txt")"
+    success "Historical URLs: $(wc -l < "$URL_FILE")"
 }
 
 # ============================================================
-# TheTimeMachine
-# ============================================================
-
-timemachine() {
-
-    [[ "$RUN_TIMEMACHINE" == "no" ]] && return
-
-    if ! command -v python3 >/dev/null 2>&1; then
-        warn "python3 unavailable — skipping TheTimeMachine."
-        return
-    fi
-
-    local ttm=""
-
-    for candidate in \
-        "$HOME/TheTimeMachine/thetimemachine.py" \
-        "./TheTimeMachine/thetimemachine.py" \
-        "./thetimemachine.py"; do
-
-        if [[ -f "$candidate" ]]; then
-            ttm="$candidate"
-            break
-        fi
-
-    done
-
-    if [[ -z "$ttm" ]]; then
-        warn "TheTimeMachine not found."
-        return
-    fi
-
-    section "11 — TheTimeMachine Historical Recon"
-
-    mkdir -p "$ROOT_DIR/raw/thetimemachine"
-
-    python3 "$ttm" "$DOMAIN" --fetch \
-        > "$ROOT_DIR/raw/thetimemachine/fetch.txt" \
-        2>&1 || true
-
-    python3 "$ttm" "$DOMAIN" --subdomains \
-        > "$ROOT_DIR/raw/thetimemachine/subdomains.txt" \
-        2>&1 || true
-
-    python3 "$ttm" "$DOMAIN" --parameters \
-        > "$ROOT_DIR/raw/thetimemachine/parameters.txt" \
-        2>&1 || true
-
-    python3 "$ttm" "$DOMAIN" --backups \
-        > "$ROOT_DIR/raw/thetimemachine/backups.txt" \
-        2>&1 || true
-
-    python3 "$ttm" "$DOMAIN" --listings \
-        > "$ROOT_DIR/raw/thetimemachine/listings.txt" \
-        2>&1 || true
-
-}
-
-# ============================================================
-# Crawl
+# Crawling
 # ============================================================
 
 crawl() {
 
-    section "12 — Web Crawling"
+    [[ "${NO_CRAWL:-0}" -eq 1 ]] && return 0
 
-    if [[ ! -s "$ROOT_DIR/http/alive.txt" ]]; then
-        warn "No live web targets."
-        return
+    section "Web Crawling"
+
+    if [[ ! -s "$ALIVE_FILE" ]]; then
+        warn "No alive targets available for crawling."
+        return 0
     fi
 
-    if have katana; then
+    if command -v katana >/dev/null 2>&1; then
 
         katana \
-            -list "$ROOT_DIR/http/alive.txt" \
-            -silent \
-            -jc \
+            -list "$ALIVE_FILE" \
             -d 5 \
+            -jc \
+            -kf all \
             -c "$THREADS" \
-            > "$ROOT_DIR/crawl/katana.txt" \
-            || true
+            -silent \
+            -o "$WORKDIR/crawl/katana.txt" \
+            >> "$LOGFILE" 2>&1 || true
 
     fi
 
-    if have gospider; then
+    if command -v gospider >/dev/null 2>&1; then
 
         gospider \
-            -S "$ROOT_DIR/http/alive.txt" \
+            -S "$ALIVE_FILE" \
             -a \
             -r \
-            --js \
-            --sitemap \
-            --robots \
-            -d 5 \
+            -d 3 \
             -c 10 \
             -t "$THREADS" \
             -q \
-            > "$ROOT_DIR/crawl/gospider.txt" \
-            || true
+            > "$WORKDIR/crawl/gospider.txt" \
+            2>> "$LOGFILE" || true
 
     fi
+
+    cat "$WORKDIR"/crawl/*.txt 2>/dev/null |
+        grep -Eo 'https?://[^ ]+' |
+        sed 's/[<>"]//g' |
+        sort -u \
+        > "$WORKDIR/crawl/all-urls.txt" || true
+
+    success "Crawled URLs: $(wc -l < "$WORKDIR/crawl/all-urls.txt")"
+}
+
+# ============================================================
+# URL Analysis
+# ============================================================
+
+analyze_urls() {
+
+    section "URL Analysis"
 
     cat \
-        "$ROOT_DIR/crawl"/*.txt \
-        "$ROOT_DIR/archives/all-urls.txt" \
-        2>/dev/null \
-        | grep -E '^https?://' \
-        | sort -u \
-        > "$ROOT_DIR/crawl/all-urls.txt"
+        "$URL_FILE" \
+        "$WORKDIR/crawl/all-urls.txt" \
+        2>/dev/null |
+        grep -E '^https?://' |
+        sort -u \
+        > "$WORKDIR/content/all-urls.txt" || true
 
-    good "Unique URLs: $(wc -l < "$ROOT_DIR/crawl/all-urls.txt")"
+    grep -E '\?.+=' \
+        "$WORKDIR/content/all-urls.txt" |
+        sort -u \
+        > "$PARAM_FILE" || true
+
+    grep -Ei \
+        '/(api|api/v[0-9]+|graphql|swagger|openapi|rest)(/|$)' \
+        "$WORKDIR/content/all-urls.txt" |
+        sort -u \
+        > "$WORKDIR/content/api-endpoints.txt" || true
+
+    grep -Ei \
+        '\.(bak|backup|old|zip|tar|gz|sql|db|sqlite|log|conf|config|ini|yaml|yml|json|xml)$' \
+        "$WORKDIR/content/all-urls.txt" |
+        sort -u \
+        > "$WORKDIR/content/interesting-files.txt" || true
+
+    grep -Ei '\.js([?#]|$)' \
+        "$WORKDIR/content/all-urls.txt" |
+        sort -u \
+        > "$JS_FILE" || true
+
+    success "Parameterized URLs: $(wc -l < "$PARAM_FILE")"
+    success "JavaScript URLs: $(wc -l < "$JS_FILE")"
 }
 
 # ============================================================
-# URL Normalization
+# Content Discovery
 # ============================================================
 
-normalize_urls() {
+content_discovery() {
 
-    section "13 — URL Normalization"
+    [[ "${NO_CONTENT:-0}" -eq 1 ]] && return 0
 
-    local input="$ROOT_DIR/crawl/all-urls.txt"
+    section "Content Discovery"
 
-    # Remove obvious static assets.
-    grep -Eiv \
-        '\.(jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|css)$' \
-        "$input" \
-        | sort -u \
-        > "$ROOT_DIR/content/interesting-urls.txt"
-
-    # Parameterized endpoints.
-    grep '?' \
-        "$input" \
-        | sort -u \
-        > "$ROOT_DIR/content/parameterized.txt" || true
-
-    # API-like endpoints.
-    grep -Ei \
-        '/(api|graphql|rest|v[0-9]+|swagger|openapi)(/|$)' \
-        "$input" \
-        | sort -u \
-        > "$ROOT_DIR/content/api-endpoints.txt" || true
-
-    # Sensitive extensions.
-    grep -Ei \
-        '\.(json|xml|yaml|yml|conf|config|ini|env|log|sql|bak|old|backup|zip|tar|gz|7z|rar|pem|key|crt|p12|pfx)$' \
-        "$input" \
-        | sort -u \
-        > "$ROOT_DIR/content/sensitive-extensions.txt" || true
-
-}
-
-# ============================================================
-# Parameter / Pattern Mining
-# ============================================================
-
-pattern_mining() {
-
-    section "14 — Parameter & Attack-Surface Classification"
-
-    local urls="$ROOT_DIR/content/parameterized.txt"
-
-    [[ ! -s "$urls" ]] && return
-
-    if have gf; then
-
-        for pattern in \
-            xss \
-            sqli \
-            ssrf \
-            lfi \
-            rce \
-            ssti \
-            redirect \
-            idor \
-            upload \
-            debug \
-            graphql \
-            jwt; do
-
-            gf "$pattern" < "$urls" \
-                2>/dev/null \
-                | sort -u \
-                > "$ROOT_DIR/findings/gf-${pattern}.txt" \
-                || true
-
-        done
-
-    else
-
-        warn "gf not installed — using built-in parameter classification."
-
-        grep -Ei \
-            '[?&](url|uri|redirect|next|return|dest|destination|callback|path|file|page|template|id|user|account|query|search|q|cmd|command)=' \
-            "$urls" \
-            | sort -u \
-            > "$ROOT_DIR/findings/high-interest-parameters.txt" \
-            || true
-
+    if ! command -v ffuf >/dev/null 2>&1; then
+        warn "FFUF not installed. Skipping content discovery."
+        return 0
     fi
+
+    local wordlist
+
+    wordlist="$(find_wordlist web || true)"
+
+    if [[ -z "$wordlist" ]]; then
+        warn "Suitable SecLists Web-Content wordlist not found."
+        return 0
+    fi
+
+    info "Using:"
+    echo "    $wordlist"
+
+    mkdir -p "$WORKDIR/content/ffuf"
+
+    while IFS= read -r url; do
+
+        local host
+
+        host="$(echo "$url" |
+            sed -E 's#https?://##' |
+            cut -d/ -f1 |
+            tr ':/' '__')"
+
+        [[ -z "$host" ]] && continue
+
+        ffuf \
+            -u "${url%/}/FUZZ" \
+            -w "$wordlist" \
+            -t "$THREADS" \
+            -rate "$RATE_LIMIT" \
+            -mc all \
+            -fc 404 \
+            -of json \
+            -o "$WORKDIR/content/ffuf/${host}.json" \
+            -s \
+            >> "$LOGFILE" 2>&1 || true
+
+    done < "$ALIVE_FILE"
+
+    success "Content discovery completed."
 }
 
 # ============================================================
-# JavaScript
+# JavaScript Analysis
 # ============================================================
 
 javascript_analysis() {
 
-    section "15 — JavaScript Discovery"
+    section "JavaScript Analysis"
 
-    grep -Ei '\.js([?#]|$)' \
-        "$ROOT_DIR/crawl/all-urls.txt" \
-        | sort -u \
-        > "$ROOT_DIR/js/javascript.txt" \
-        || true
-
-    if [[ ! -s "$ROOT_DIR/js/javascript.txt" ]]; then
-        return
+    if [[ ! -s "$JS_FILE" ]]; then
+        warn "No JavaScript URLs found."
+        return 0
     fi
 
-    if have subjs; then
+    sort -u "$JS_FILE" > "$WORKDIR/javascript/javascript.txt"
 
-        cat "$ROOT_DIR/http/alive.txt" \
-            | subjs \
-            | sort -u \
-            > "$ROOT_DIR/js/subjs.txt" \
-            || true
+    if command -v katana >/dev/null 2>&1; then
+
+        katana \
+            -list "$WORKDIR/javascript/javascript.txt" \
+            -jc \
+            -silent \
+            -o "$WORKDIR/javascript/js-crawl.txt" \
+            >> "$LOGFILE" 2>&1 || true
 
     fi
 
-    # Extract common endpoint-like strings from URLs.
-    grep -Eo \
-        'https?://[^"'\'' ]+' \
-        "$ROOT_DIR/js/javascript.txt" \
-        2>/dev/null \
-        | sort -u \
-        > "$ROOT_DIR/js/js-urls.txt" \
-        || true
+    success "JavaScript analysis completed."
 }
 
 # ============================================================
-# Subdomain Takeover Signals
+# GF Findings
 # ============================================================
 
-takeover() {
+gf_analysis() {
 
-    section "16 — Subdomain Takeover Signals"
+    section "Pattern-Based Candidate Analysis"
 
-    if ! have subzy; then
-        warn "subzy not installed — skipping."
-        return
+    if ! command -v gf >/dev/null 2>&1; then
+        warn "GF is not installed. Skipping."
+        return 0
     fi
 
+    local input="$WORKDIR/content/all-urls.txt"
+
+    [[ ! -s "$input" ]] && return 0
+
+    local patterns=(
+        xss
+        sqli
+        ssrf
+        lfi
+        rce
+        ssti
+        redirect
+        idor
+        upload
+        graphql
+    )
+
+    for pattern in "${patterns[@]}"; do
+
+        if gf "$pattern" < "$input" \
+            > "$WORKDIR/findings/gf-${pattern}.txt" 2>/dev/null; then
+
+            sort -u \
+                "$WORKDIR/findings/gf-${pattern}.txt" \
+                -o "$WORKDIR/findings/gf-${pattern}.txt"
+
+        fi
+
+    done
+
+    success "GF candidate analysis completed."
+}
+
+# ============================================================
+# Subdomain Takeover
+# ============================================================
+
+takeover_check() {
+
+    if ! command -v subzy >/dev/null 2>&1; then
+        warn "Subzy not installed. Skipping."
+        return 0
+    fi
+
+    section "Subdomain Takeover Candidate Check"
+
     subzy run \
-        --targets "$ROOT_DIR/subdomains/all-resolved.txt" \
-        > "$ROOT_DIR/findings/subzy.txt" \
-        2>&1 || true
+        --targets "$SUBDOMAIN_FILE" \
+        --hide_fails \
+        > "$WORKDIR/findings/subzy.txt" \
+        2>> "$LOGFILE" || true
+
+    success "Subzy check completed."
 }
 
 # ============================================================
@@ -1023,175 +1157,172 @@ takeover() {
 
 nuclei_scan() {
 
-    section "17 — Nuclei Validation"
+    [[ "${NO_NUCLEI:-0}" -eq 1 ]] && return 0
 
-    if ! have nuclei; then
-        warn "nuclei not installed — skipping."
-        return
+    if ! command -v nuclei >/dev/null 2>&1; then
+        warn "Nuclei not installed. Skipping."
+        return 0
     fi
 
-    if [[ ! -s "$ROOT_DIR/http/alive.txt" ]]; then
-        warn "No HTTP targets for Nuclei."
-        return
+    if [[ ! -s "$ALIVE_FILE" ]]; then
+        warn "No live targets for Nuclei."
+        return 0
     fi
+
+    section "Nuclei Validation"
 
     nuclei \
-        -list "$ROOT_DIR/http/alive.txt" \
-        -silent \
+        -l "$ALIVE_FILE" \
         -severity low,medium,high,critical \
-        -stats \
         -c "$THREADS" \
+        -rl "$RATE_LIMIT" \
         -jsonl \
-        -o "$ROOT_DIR/findings/nuclei.jsonl" \
-        || true
+        -o "$WORKDIR/findings/nuclei.jsonl" \
+        >> "$LOGFILE" 2>&1 || true
+
+    success "Nuclei scan completed."
 }
 
 # ============================================================
-# Finding Summary
+# Report
 # ============================================================
 
-generate_summary() {
+generate_report() {
 
-    section "18 — Recon Summary"
+    section "Generating Report"
 
-    local summary="$ROOT_DIR/reports/summary.txt"
+    local end_time
+    local elapsed
 
-    {
-        echo "============================================================"
-        echo "                 r4vindra Recon Framework"
-        echo "============================================================"
-        echo
-        echo "Run ID       : $RUN_ID"
-        echo "Mode         : $MODE"
-        echo "Started      : $(date)"
-        echo
-        echo "------------------------------------------------------------"
-        echo "DISCOVERY"
-        echo "------------------------------------------------------------"
-        echo "Passive subdomains : $(wc -l < "$ROOT_DIR/subdomains/passive-all.txt" 2>/dev/null || echo 0)"
-        echo "Resolved subdomains: $(wc -l < "$ROOT_DIR/subdomains/all-resolved.txt" 2>/dev/null || echo 0)"
-        echo "Live HTTP targets  : $(wc -l < "$ROOT_DIR/http/alive.txt" 2>/dev/null || echo 0)"
-        echo "Historical URLs    : $(wc -l < "$ROOT_DIR/archives/all-urls.txt" 2>/dev/null || echo 0)"
-        echo "Unique URLs        : $(wc -l < "$ROOT_DIR/crawl/all-urls.txt" 2>/dev/null || echo 0)"
-        echo
-        echo "------------------------------------------------------------"
-        echo "HIGH-VALUE FILES"
-        echo "------------------------------------------------------------"
-        echo
-        echo "Parameterized:"
-        echo "$ROOT_DIR/content/parameterized.txt"
-        echo
-        echo "API endpoints:"
-        echo "$ROOT_DIR/content/api-endpoints.txt"
-        echo
-        echo "Sensitive extensions:"
-        echo "$ROOT_DIR/content/sensitive-extensions.txt"
-        echo
-        echo "Nuclei:"
-        echo "$ROOT_DIR/findings/nuclei.jsonl"
-        echo
-        echo "Subdomain takeover:"
-        echo "$ROOT_DIR/findings/subzy.txt"
-        echo
-        echo "============================================================"
+    end_time="$(date +%s)"
+    elapsed=$((end_time - START_TIME))
 
-    } > "$summary"
+    local subdomains=0
+    local alive=0
+    local urls=0
+    local parameters=0
+    local js=0
+    local ports=0
 
-    cat "$summary"
+    [[ -f "$SUBDOMAIN_FILE" ]] &&
+        subdomains="$(wc -l < "$SUBDOMAIN_FILE")"
 
+    [[ -f "$ALIVE_FILE" ]] &&
+        alive="$(wc -l < "$ALIVE_FILE")"
+
+    [[ -f "$WORKDIR/content/all-urls.txt" ]] &&
+        urls="$(wc -l < "$WORKDIR/content/all-urls.txt")"
+
+    [[ -f "$PARAM_FILE" ]] &&
+        parameters="$(wc -l < "$PARAM_FILE")"
+
+    [[ -f "$JS_FILE" ]] &&
+        js="$(wc -l < "$JS_FILE")"
+
+    [[ -f "$PORT_FILE" ]] &&
+        ports="$(wc -l < "$PORT_FILE")"
+
+    cat > "$WORKDIR/reports/summary.txt" <<EOF
+============================================================
+Basic-Web-Enumeration
+============================================================
+
+Version       : ${VERSION}
+Profile       : ${PROFILE}
+Started       : $(date)
+Duration      : ${elapsed} seconds
+
+Output        : ${WORKDIR}
+
+============================================================
+DISCOVERY SUMMARY
+============================================================
+
+Subdomains    : ${subdomains}
+Alive Web     : ${alive}
+Open Ports    : ${ports}
+URLs          : ${urls}
+Parameters    : ${parameters}
+JavaScript    : ${js}
+
+============================================================
+IMPORTANT
+============================================================
+
+Automated output represents reconnaissance data or candidate
+findings. Results require manual validation.
+
+============================================================
+EOF
+
+    success "Report: $WORKDIR/reports/summary.txt"
 }
 
 # ============================================================
-# Final dashboard
-# ============================================================
-
-dashboard() {
-
-    local end
-    local duration
-
-    end=$(date +%s)
-    duration=$((end - START_TIME))
-
-    section "19 — Recon Complete"
-
-    good "Run completed in ${duration}s"
-
-    echo
-    echo -e "${WHITE}Workspace:${NC}"
-    echo
-    echo "  $ROOT_DIR"
-    echo
-
-    echo -e "${WHITE}Important files:${NC}"
-    echo
-    echo "  scope/domains.txt"
-    echo "  subdomains/all-resolved.txt"
-    echo "  http/alive.txt"
-    echo "  infra/naabu.txt"
-    echo "  archives/all-urls.txt"
-    echo "  crawl/all-urls.txt"
-    echo "  content/parameterized.txt"
-    echo "  content/api-endpoints.txt"
-    echo "  content/sensitive-extensions.txt"
-    echo "  findings/"
-    echo "  reports/summary.txt"
-    echo
-
-    echo -e "${GREEN}Next step:${NC}"
-    echo "Review findings manually and validate anything interesting."
-    echo
-}
-
-# ============================================================
-# Pipeline
+# Main Pipeline
 # ============================================================
 
 main() {
 
     banner
 
-    prepare_scope
+    parse_args "$@"
 
-    crtsh
+    check_environment
 
-    subdomain_enum
+    find_seclists
 
-    if [[ "$MODE" != "passive" ]]; then
+    check_tools
 
-        bbot_enum
+    prepare_workspace
 
-        resolve_domains
+    prepare_targets
 
-        permutation
+    passive_recon
 
-        http_probe
+    if [[ "$PROFILE" != "passive" ]]; then
+
+        bbot_recon
+
+        dns_resolution
+
+        permutation_recon
+
+        http_discovery
 
         port_scan
 
-        caduceus_scan
-
-        archive_enum
-
-        timemachine
+        archives
 
         crawl
 
-        normalize_urls
+        analyze_urls
 
-        pattern_mining
+        content_discovery
 
         javascript_analysis
 
-        takeover
+        gf_analysis
+
+        takeover_check
 
         nuclei_scan
 
     fi
 
-    generate_summary
+    generate_report
 
-    dashboard
+    section "Reconnaissance Complete"
+
+    echo
+    echo -e "${GREEN}Results:${NC}"
+    echo
+    echo "    $WORKDIR"
+    echo
+
+    echo -e "${WHITE}Summary:${NC}"
+    echo
+    cat "$WORKDIR/reports/summary.txt"
 }
 
 main "$@"
